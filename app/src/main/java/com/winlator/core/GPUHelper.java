@@ -1,0 +1,67 @@
+package com.winlator.core;
+
+import android.util.Log;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public abstract class GPUHelper {
+
+    static {
+        try {
+            System.loadLibrary("winlator"); // Make sure libwinlator.so is correctly loaded
+        } catch (UnsatisfiedLinkError e) {
+            Log.e("GPUHelper", "❌ Failed to load winlator native library", e);
+        }
+    }
+
+    // 🔌 Native method to get supported Vulkan extensions (implemented in C/C++)
+    public static native String[] vkGetDeviceExtensions();
+
+    // 🧮 Compose Vulkan version int from major.minor.patch
+    public static int vkMakeVersion(int major, int minor, int patch) {
+        return (major << 22) | (minor << 12) | patch;
+    }
+
+    // 🔍 Parse string version like "1.3.224" into int version
+    public static int vkMakeVersion(String versionStr) {
+        Matcher matcher = Pattern.compile("([0-9]+)\\.([0-9]+)\\.?([0-9]+)?").matcher(versionStr);
+        if (matcher.find()) {
+            try {
+                int major = matcher.group(1) != null ? Integer.parseInt(matcher.group(1)) : 0;
+                int minor = matcher.group(2) != null ? Integer.parseInt(matcher.group(2)) : 0;
+                int patch = matcher.group(3) != null ? Integer.parseInt(matcher.group(3)) : 0;
+                return vkMakeVersion(major, minor, patch);
+            } catch (NumberFormatException e) {
+                Log.w("GPUHelper", "⚠️ Invalid Vulkan version string: " + versionStr);
+                return 0;
+            }
+        }
+        return 0;
+    }
+
+    // 🧾 Extract major version from packed int
+    public static int vkVersionMajor(int version) {
+        return version >> 22;
+    }
+
+    // 🧾 Extract minor version from packed int
+    public static int vkVersionMinor(int version) {
+        return (version >> 12) & 0x3FF;
+    }
+
+    // ✅ Log all available Vulkan extensions (call this for debugging)
+    public static void logAvailableExtensions() {
+        try {
+            String[] extensions = vkGetDeviceExtensions();
+            if (extensions == null || extensions.length == 0) {
+                Log.w("VORTEK", "⚠️ No Vulkan extensions found (vkGetDeviceExtensions returned empty).");
+            } else {
+                for (String ext : extensions) {
+             //       Log.i("VORTEK", "🧩 Available Extension: " + ext);
+                }
+            }
+        } catch (Exception e) {
+            Log.e("VORTEK", "❌ Failed to get Vulkan extensions", e);
+        }
+    }
+}

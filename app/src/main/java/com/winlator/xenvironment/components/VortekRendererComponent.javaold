@@ -1,0 +1,113 @@
+package com.winlator.xenvironment.components;
+
+import android.util.Log;
+import android.view.Surface;
+import com.termux.x11.LorieView;
+import androidx.annotation.Keep;
+
+import java.util.Arrays;
+
+public class VortekRendererComponent {
+    private static final String TAG = "VORTEK";
+
+    public static final int VK_MAX_VERSION = vkMakeVersion(1, 3, 128);
+
+    private long nativeHandle = 0;
+    private LorieView lorieView;
+    private Surface surface;
+
+    public VortekRendererComponent(LorieView view) {
+        this.lorieView = view;
+    }
+
+    // --- Options ---
+    public static class Options {
+        public String[] exposedDeviceExtensions = null;
+        public int maxDeviceMemory = 4096;
+        public int vkMaxVersion = VK_MAX_VERSION;
+
+        public static Options defaultOptions() {
+            Options o = new Options();
+            o.vkMaxVersion = VK_MAX_VERSION;
+            o.maxDeviceMemory = 4096;
+            o.exposedDeviceExtensions = null;
+            return o;
+        }
+    }
+
+    // --- Native interface ---
+    public native long createVkContext(int fd, Options options);
+    public native void destroyVkContext(long ctx);
+
+    @Keep
+    private int getWindowWidth(int id) {
+        return (lorieView != null) ? lorieView.getWidth() : 1280;
+    }
+
+    @Keep
+    private int getWindowHeight(int id) {
+        return (lorieView != null) ? lorieView.getHeight() : 720;
+    }
+
+    @Keep
+    private long getWindowHardwareBuffer(int id) {
+        // If you later integrate GPUImage, return its buffer ptr here
+        return 0;
+    }
+
+    @Keep
+    private void updateWindowContent(int id) {
+        // Optional: force redraw if you blit CPU textures
+    }
+
+    // --- Lifecycle ---
+    public void setSurface(Surface s) {
+        this.surface = s;
+        if (s != null && s.isValid()) {
+            Log.i(TAG, "📺 Surface attached to Vulkan");
+        } else {
+            Log.w(TAG, "⚠️ Surface is null or invalid");
+        }
+    }
+
+    public long initContext(int fd, Options opts) {
+        if (opts == null) opts = Options.defaultOptions();
+
+      //  Log.i(TAG, "🧪 Init Vortek: vkMax=" + opts.vkMaxVersion
+ //               + " mem=" + opts.maxDeviceMemory
+ //               + " ext=" + (opts.exposedDeviceExtensions == null
+  //                      ? "all"
+ //                       : Arrays.toString(opts.exposedDeviceExtensions)));
+
+        if (surface == null || !surface.isValid()) {
+            Log.e(TAG, "❌ Cannot init Vortek: surface not ready");
+            return 0;
+        }
+
+        nativeHandle = createVkContext(fd, opts);
+        if (nativeHandle == 0) {
+            Log.e(TAG, "❌ Failed to create Vulkan context");
+        }
+        return nativeHandle;
+    }
+
+    public void destroy() {
+        if (nativeHandle != 0) {
+            destroyVkContext(nativeHandle);
+            nativeHandle = 0;
+            Log.i(TAG, "🗑️ Vortek context destroyed");
+        }
+    }
+
+    public static int vkMakeVersion(int major, int minor, int patch) {
+        return (major << 22) | (minor << 12) | patch;
+    }
+
+    static {
+        try {
+            System.loadLibrary("vortekrenderer");
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "❌ Failed to load vortekrenderer.so", e);
+        }
+    }
+}

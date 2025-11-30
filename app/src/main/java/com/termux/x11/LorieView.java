@@ -1,5 +1,15 @@
 package com.termux.x11;
 
+////////
+import android.view.MotionEvent;
+import android.view.InputDevice;
+import com.winlator.xenvironment.components.VortekRendererComponent;
+//import android.widget.Toast;
+
+import static android.view.InputDevice.KEYBOARD_TYPE_ALPHABETIC;
+import static android.view.KeyEvent.KEYCODE_BACK;
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.ClipData;
@@ -20,9 +30,9 @@ import android.os.Looper;
 import android.os.Message;
 import android.text.Editable;
 import android.text.InputType;
-import android.text.Selection;
 import android.util.AttributeSet;
 import android.util.Log;
+import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -46,8 +56,13 @@ import android.view.inputmethod.TextSnapshot;
 
 import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
-import androidx.core.math.MathUtils;
 
+import com.termux.x11.controller.core.CursorLocker;
+import com.termux.x11.controller.winhandler.WinHandler;
+import com.termux.x11.controller.xserver.InputDeviceManager;
+import com.termux.x11.controller.xserver.Keyboard;
+import com.termux.x11.controller.xserver.Pointer;
+import com.termux.x11.controller.xserver.XKeycode;
 import com.termux.x11.input.InputStub;
 import com.termux.x11.input.TouchInputHandler;
 
@@ -56,8 +71,6 @@ import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 import java.util.regex.PatternSyntaxException;
-
-import static java.nio.charset.StandardCharsets.UTF_8;
 
 import dalvik.annotation.optimization.CriticalNative;
 import dalvik.annotation.optimization.FastNative;
@@ -327,9 +340,30 @@ class InputConnectionWrapper implements InputConnection {
     }
 }
 
-@Keep @SuppressLint("WrongConstant")
+@Keep
+@SuppressLint("WrongConstant")
 @SuppressWarnings("deprecation")
 public class LorieView extends SurfaceView implements InputStub {
+    public final Keyboard keyboard = Keyboard.createKeyboard(this);
+    public final Pointer pointer = new Pointer(this);
+    final public InputDeviceManager inputDeviceManager = new InputDeviceManager(this);
+    public ScreenInfo screenInfo;
+    public CursorLocker cursorLocker;
+    public WinHandler winHandler;
+
+    public void setWinHandler(WinHandler handler) {
+        this.winHandler = handler;
+    }
+
+    public WinHandler getWinHandler() {
+        return winHandler;
+    }
+
+
+    public boolean isFullscreen() {
+        return true;
+    }
+
     public interface Callback {
         void changed(int surfaceWidth, int surfaceHeight, int screenWidth, int screenHeight);
     }
@@ -337,6 +371,48 @@ public class LorieView extends SurfaceView implements InputStub {
     interface PixelFormat {
         int BGRA_8888 = 5; // Stands for HAL_PIXEL_FORMAT_BGRA_8888
     }
+
+
+///////////////
+private VortekRendererComponent vortekRenderer;
+// Add a member
+// add near the other methods
+
+public boolean isSurfaceReady() {
+    Surface s = getHolder().getSurface();
+    return s != null && s.isValid();
+}
+
+public Surface getSurfaceOrNull() {
+    Surface s = getHolder().getSurface();
+    return (s != null && s.isValid()) ? s : null;
+}
+
+
+public VortekRendererComponent getVortekRenderer() {
+    return vortekRenderer;
+}
+
+public void setVortekRendererComponent(VortekRendererComponent r) {
+    this.vortekRenderer = r;
+
+    // If surface is already valid, attach it now
+    Surface s = getSurfaceOrNull();
+    if (s != null) {
+        vortekRenderer.setSurface(s);
+        Rect fr = getHolder().getSurfaceFrame();
+        vortekRenderer.setSurfaceDimensions(fr.width(), fr.height());
+        // Also tell X/driver about current window size
+        sendWindowChange(fr.width(), fr.height(), 60, "VORTEK");
+        Log.i("VORTEK", "Surface attached to Vortek via setter");
+    } else {
+        Log.w("VORTEK", "Surface not ready yet in setter; will attach on surfaceChanged()");
+    }
+}
+
+
+
+
 
     private ClipboardManager clipboard;
     private long lastClipboardTimestamp = System.currentTimeMillis();
@@ -465,7 +541,7 @@ public class LorieView extends SurfaceView implements InputStub {
             int oldLen = currentComposingText != null ? currentComposingText.length() : 0;
             int newLen = newText != null ? newText.length() : 0;
             if (oldLen > 0 && newLen > 0 && (currentComposingText.toString().startsWith(newText.toString())
-                    || newText.toString().startsWith(currentComposingText.toString()))) {
+                || newText.toString().startsWith(currentComposingText.toString()))) {
                 for (int i=0; i < oldLen - newLen; i++)
                     sendKey(KeyEvent.KEYCODE_DEL);
                 for (int i=oldLen; i<newLen; i++)
@@ -541,9 +617,9 @@ public class LorieView extends SurfaceView implements InputStub {
         @Override
         public boolean requestCursorUpdates(int cursorUpdateMode) {
             mIMM.updateCursorAnchorInfo(LorieView.this, new CursorAnchorInfo.Builder()
-                    .setComposingText(-1, null)
-                    .setSelectionRange(currentPos, currentPos)
-                    .build());
+                .setComposingText(-1, null)
+                .setSelectionRange(currentPos, currentPos)
+                .build());
             return true;
         }
 
@@ -552,46 +628,107 @@ public class LorieView extends SurfaceView implements InputStub {
             return requestCursorUpdates(cursorUpdateMode);
         }
     });
-    private final SurfaceHolder.Callback mSurfaceCallback = new SurfaceHolder.Callback() {
-        @Override public void surfaceCreated(@NonNull SurfaceHolder holder) {
-            holder.setFormat(PixelFormat.BGRA_8888);
+ 
+ private final SurfaceHolder.Callback mSurfaceCallback = new SurfaceHolder.Callback() {
+
+    @Override public void surfaceCreated(@NonNull SurfaceHolder holder) {
+        holder.setFormat(PixelFormat.BGRA_8888);
+
+        // If MainActivity already provided a VortekRendererComponent,
+        // attach surface + dimensions right away.
+        if (vortekRenderer != null) {
+            Surface s = holder.getSurface();
+            if (s != null && s.isValid()) {
+                vortekRenderer.setSurface(s);
+                Rect fr = holder.getSurfaceFrame();
+                vortekRenderer.setSurfaceDimensions(fr.width(), fr.height());
+                sendWindowChange(fr.width(), fr.height(), 60, "VORTEK");
+                Log.i("VORTEK", "Surface attached to Vulkan (surfaceCreated)");
+            } else {
+                Log.w("VORTEK", "surfaceCreated: surface is null/invalid");
+            }
         }
+    }
 
-        @Override public void surfaceChanged(@NonNull SurfaceHolder holder, int f, int width, int height) {
-            LorieView.this.surfaceChanged(holder.getSurface());
-            width = getMeasuredWidth();
-            height = getMeasuredHeight();
+    @Override public void surfaceChanged(@NonNull SurfaceHolder holder, int f, int width, int height) {
+        // Keep existing flow
+        LorieView.this.surfaceChanged(holder.getSurface());
 
-            Log.d("SurfaceChangedListener", "Surface was changed: " + width + "x" + height);
-            if (mCallback == null)
-                return;
+        // Use the actual Surface frame size for accuracy
+        Rect fr = holder.getSurfaceFrame();
+        width  = fr.width();
+        height = fr.height();
 
-            getDimensionsFromSettings();
-            if (mCallback != null)
-                mCallback.changed(width, height, p.x, p.y);
+        Log.d("SurfaceChangedListener", "Surface was changed: " + width + "x" + height);
+        if (mCallback == null)
+            return;
+
+        getDimensionsFromSettings();
+        if (mCallback != null)
+            mCallback.changed(width, height, p.x, p.y);
+
+        // Attach to Vortek if available
+        if (vortekRenderer != null) {
+            Surface surface = holder.getSurface();
+            if (surface != null && surface.isValid()) {
+                vortekRenderer.setSurface(surface);
+                vortekRenderer.setSurfaceDimensions(width, height);
+                sendWindowChange(width, height, 60, "VORTEK");
+                Log.i("VORTEK", "Surface attached to Vulkan (surfaceChanged)");
+            } else {
+                Log.w("VORTEK", "surfaceChanged: surface is null/invalid");
+            }
         }
+    }
 
-        @Override public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
-            LorieView.this.surfaceChanged(null);
-            if (mCallback != null)
-                mCallback.changed(0, 0, 0, 0);
-        }
-    };
+    @Override public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
+        LorieView.this.surfaceChanged(null);
+        if (mCallback != null)
+            mCallback.changed(0, 0, 0, 0);
+        // Do NOT null out vortekRenderer here; MainActivity manages lifecycle.
+    }
+};
 
-    public LorieView(Context context) { super(context); init(); }
-    public LorieView(Context context, AttributeSet attrs) { super(context, attrs); init(); }
-    public LorieView(Context context, AttributeSet attrs, int defStyleAttr) { super(context, attrs, defStyleAttr); init(); }
+    public LorieView(Context context) {
+        super(context);
+        init();
+    }
+
+    public LorieView(Context context, AttributeSet attrs) {
+        super(context, attrs);
+        init();
+    }
+
+    public LorieView(Context context, AttributeSet attrs, int defStyleAttr) {
+        super(context, attrs, defStyleAttr);
+        init();
+    }
+
     @SuppressWarnings("unused")
-    public LorieView(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) { super(context, attrs, defStyleAttr, defStyleRes); init(); }
+    public LorieView(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
+        super(context, attrs, defStyleAttr, defStyleRes);
+        init();
+    }
 
     private void init() {
         getHolder().addCallback(mSurfaceCallback);
         clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
         nativeInit();
+        screenInfo = new ScreenInfo(this);
+        cursorLocker = new CursorLocker(this);
     }
 
     public void setCallback(Callback callback) {
         mCallback = callback;
+        triggerCallback();
+    }
+
+    public void regenerate() {
+        Callback callback = mCallback;
+        mCallback = null;
+        getHolder().setFormat(android.graphics.PixelFormat.RGBA_8888);
+        mCallback = callback;
+
         triggerCallback();
     }
 
@@ -604,13 +741,26 @@ public class LorieView extends SurfaceView implements InputStub {
             public boolean isStateful() {
                 return true;
             }
+
             public boolean hasFocusStateSpecified() {
                 return true;
             }
         });
 
         Rect r = getHolder().getSurfaceFrame();
-        MainActivity.getInstance().runOnUiThread(() -> mSurfaceCallback.surfaceChanged(getHolder(), PixelFormat.BGRA_8888, r.width(), r.height()));
+        getActivity().runOnUiThread(() -> mSurfaceCallback.surfaceChanged(getHolder(), PixelFormat.BGRA_8888, r.width(), r.height()));
+    }
+
+    private Activity getActivity() {
+        Context context = getContext();
+        while (context instanceof ContextWrapper) {
+            if (context instanceof Activity) {
+                return (Activity) context;
+            }
+            context = ((ContextWrapper) context).getBaseContext();
+        }
+
+        throw new NullPointerException();
     }
 
     void getDimensionsFromSettings() {
@@ -645,10 +795,16 @@ public class LorieView extends SurfaceView implements InputStub {
             }
         }
 
-        if (prefs.adjustResolution.get() && ((width < height && w > h) || (width > height && w < h)))
+        if (prefs.adjustResolution.get() && ((width < height && w > h) || (width > height && w < h))) {
             p.set(h, w);
-        else
+            screenInfo.screenWidth = (short) h;
+            screenInfo.screenHeight = (short) w;
+        }
+        else {
             p.set(w, h);
+            screenInfo.screenWidth = (short) w;
+            screenInfo.screenHeight = (short) h;
+        }
     }
 
     @Override
@@ -657,8 +813,8 @@ public class LorieView extends SurfaceView implements InputStub {
 
         Prefs prefs = MainActivity.getPrefs();
         if (prefs.displayStretch.get()
-              || "native".equals(prefs.displayResolutionMode.get())
-              || "scaled".equals(prefs.displayResolutionMode.get())) {
+            || "native".equals(prefs.displayResolutionMode.get())
+            || "scaled".equals(prefs.displayResolutionMode.get())) {
             getHolder().setSizeFromLayout();
             return;
         }
@@ -690,11 +846,11 @@ public class LorieView extends SurfaceView implements InputStub {
     }
 
     static final Set<Integer> imeBuggyKeys = Set.of(
-            KeyEvent.KEYCODE_DEL,
-            KeyEvent.KEYCODE_CTRL_LEFT,
-            KeyEvent.KEYCODE_CTRL_RIGHT,
-            KeyEvent.KEYCODE_SHIFT_LEFT,
-            KeyEvent.KEYCODE_SHIFT_RIGHT
+        KeyEvent.KEYCODE_DEL,
+        KeyEvent.KEYCODE_CTRL_LEFT,
+        KeyEvent.KEYCODE_CTRL_RIGHT,
+        KeyEvent.KEYCODE_SHIFT_LEFT,
+        KeyEvent.KEYCODE_SHIFT_RIGHT
     );
 
     Handler keyReleaseHandler = new Handler(Looper.getMainLooper()) {
@@ -729,7 +885,16 @@ public class LorieView extends SurfaceView implements InputStub {
             if (action == KeyEvent.ACTION_UP)
                 keyReleaseHandler.removeMessages(event.getKeyCode());
         }
-
+        int k = event.getKeyCode();
+        if (k == KEYCODE_BACK) {
+            if (event.isFromSource(InputDevice.SOURCE_MOUSE) || event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)) {
+                if (event.getRepeatCount() != 0) // ignore auto-repeat
+                    return true;
+                if (event.getAction() == KeyEvent.ACTION_UP || event.getAction() == KeyEvent.ACTION_DOWN)
+                    sendMouseEvent(-1, -1, InputStub.BUTTON_RIGHT, event.getAction() == KeyEvent.ACTION_DOWN, true);
+                return true;
+            }
+        }
         return super.dispatchKeyEvent(event);
     }
 
@@ -774,30 +939,30 @@ public class LorieView extends SurfaceView implements InputStub {
     public void checkForClipboardChange() {
         ClipDescription desc = clipboard.getPrimaryClipDescription();
         if (clipboardSyncEnabled && desc != null &&
-                lastClipboardTimestamp < desc.getTimestamp() &&
-                desc.getMimeTypeCount() == 1 &&
-                (desc.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN) ||
-                        desc.hasMimeType(ClipDescription.MIMETYPE_TEXT_HTML))) {
+            lastClipboardTimestamp < desc.getTimestamp() &&
+            desc.getMimeTypeCount() == 1 &&
+            (desc.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN) ||
+                desc.hasMimeType(ClipDescription.MIMETYPE_TEXT_HTML))) {
             lastClipboardTimestamp = desc.getTimestamp();
             sendClipboardAnnounce();
             Log.d("CLIP", "sending clipboard announce");
         }
     }
 
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-
-        requestFocus();
-
-        if (clipboardSyncEnabled && hasFocus) {
-            clipboard.addPrimaryClipChangedListener(clipboardListener);
-            checkForClipboardChange();
-        } else
-            clipboard.removePrimaryClipChangedListener(clipboardListener);
-
-        TouchInputHandler.refreshInputDevices();
-    }
+//    @Override
+//    public void onWindowFocusChanged(boolean hasFocus) {
+//        super.onWindowFocusChanged(hasFocus);
+//
+//        requestFocus();
+//
+//        if (clipboardSyncEnabled && hasFocus) {
+//            clipboard.addPrimaryClipChangedListener(clipboardListener);
+//            checkForClipboardChange();
+//        } else
+//            clipboard.removePrimaryClipChangedListener(clipboardListener);
+//
+//        TouchInputHandler.refreshInputDevices();
+//    }
 
     @Override
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
@@ -830,10 +995,48 @@ public class LorieView extends SurfaceView implements InputStub {
             mIMM.restartInput(this);
     }
 
-    @FastNative private native void nativeInit();
+
+    public void injectPointerMove(int x, int y) {
+        pointer.moveTo(x, y);
+    }
+
+    public void injectPointerMoveDelta(int dx, int dy) {
+        pointer.moveDelta(dx, dy);
+    }
+
+    public void injectPointerButtonPress(Pointer.Button buttonCode) {
+        pointer.setButton(buttonCode, true);
+    }
+
+    public void injectPointerButtonRelease(Pointer.Button buttonCode) {
+        pointer.setButton(buttonCode, false);
+    }
+
+    public void injectKeyPress(XKeycode xKeycode) {
+        injectKeyPress(xKeycode, 0);
+    }
+
+    public void injectKeyPress(XKeycode xKeycode, int keysym) {
+        keyboard.setKeyPress(xKeycode.id, keysym);
+    }
+
+    public void injectKeyRelease(XKeycode xKeycode) {
+        keyboard.setKeyRelease(xKeycode.id);
+    }
+
+    public void injectText(String text) {
+        if (text.isEmpty()) {
+            return;
+        }
+        sendTextEvent(text.getBytes());
+    }
+
+    @FastNative
+    private native void nativeInit();
     @FastNative private native void surfaceChanged(Surface surface);
     @FastNative static native void connect(int fd);
-    @CriticalNative static native boolean connected();
+    @CriticalNative
+    static native boolean connected();
     @FastNative static native void startLogcat(int fd);
     @FastNative static native void setClipboardSyncEnabled(boolean enabled, boolean ignored);
     @FastNative public native void sendClipboardAnnounce();

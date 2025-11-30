@@ -1,0 +1,161 @@
+package com.winlator.xenvironment.components;
+
+import android.util.Log;
+import android.view.Surface;
+
+import androidx.annotation.Nullable;
+
+import com.termux.x11.LorieView;
+import com.winlator.core.GPUHelper;
+
+import java.lang.ref.WeakReference;
+import java.util.Arrays;
+
+/**
+ * Java wrapper around the native Vortek renderer using the ORIGINAL JNI names.
+ * Native exports expected in libvortekrenderer.so:
+ *   long   createVkContext(int fd, int vkMaxVersion, int maxMemMB, String[] deviceExtensions)
+ *   void   vkContextVkContext(long ctx)
+ *   void   setNativeWindow(long ctx, android.view.Surface surface)
+ */
+public class VortekRendererComponent {
+
+    private static final String TAG = "VORTEK";
+
+    static {
+        try {
+            // If your native code needs symbols from libwinlator, keep this; otherwise harmless.
+            System.loadLibrary("winlator");
+        } catch (UnsatisfiedLinkError e) {
+            Log.w(TAG, "winlator not loaded (may be fine): " + e.getMessage());
+        }
+        System.loadLibrary("vortekrenderer");
+    }
+
+    // ===== JNI (must match the .so EXACTLY — NO 'n' PREFIX) =====
+    private static native long createVkContext(int fd, int vkMaxVersion, int maxMemMB, String[] deviceExtensions);
+    public static native void destroyVkContext(long ctx);
+    private static native void setNativeWindow(long ctx, Surface surface);
+    // ============================================================
+
+    private long ctxHandle = 0;
+    private @Nullable Surface currentSurface = null;
+    private final WeakReference<LorieView> viewRef;
+
+    /** Preferred when instantiated from LorieView. */
+    public VortekRendererComponent(LorieView view) {
+        this.viewRef = new WeakReference<>(view);
+    }
+
+    /** Fallback no-arg ctor. */
+    public VortekRendererComponent() {
+        this.viewRef = new WeakReference<>(null);
+    }
+
+    /** Provide/replace the rendering surface. If a context exists, it is attached immediately. */
+    public void setSurface(@Nullable Surface surface) {
+        this.currentSurface = surface;
+        if (ctxHandle != 0 && surface != null && surface.isValid()) {
+            try {
+                setNativeWindow(ctxHandle, surface);
+                Log.i(TAG, "📺 Surface attached to Vulkan");
+            } catch (Throwable t) {
+                Log.e(TAG, "Failed to attach Surface to Vulkan", t);
+            }
+        }
+    }
+
+    /**
+     * Initialize/replace the Vulkan context for a given Wine FD and options.
+     * Returns the native context handle (>0 on success).
+     */
+    public long initContext(int fd, Options opts) {
+        destroy(); // drop any previous context
+
+        if (opts == null) opts = Options.defaultOptions();
+
+        Log.i(TAG, "🧪 Options -> vkMaxVersion: " + opts.vkMaxVersion +
+                ", maxDeviceMemory: " + opts.maxDeviceMemory +
+                ", extensions: " + Arrays.toString(opts.exposedDeviceExtensions));
+
+        long handle = 0;
+        try {
+            handle = VortekRendererComponent.createVkContext(
+                    fd, opts.vkMaxVersion, opts.maxDeviceMemory, opts.exposedDeviceExtensions
+            );
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "❌ JNI symbol mismatch for createVkContext — check package/class/signature", e);
+        } catch (Throwable t) {
+            Log.e(TAG, "❌ Exception creating Vulkan context", t);
+        }
+
+        Log.i(TAG, "✅ Returned context handle = " + handle);
+        ctxHandle = handle;
+
+        if (ctxHandle > 0) {
+            // attach surface if we already have one
+            if (currentSurface != null && currentSurface.isValid()) {
+                try {
+                    setNativeWindow(ctxHandle, currentSurface);
+                    Log.i(TAG, "📺 Surface ready for Vortek");
+                } catch (Throwable t) {
+                    Log.e(TAG, "Failed to set native window", t);
+                }
+            }
+        } else {
+            Log.e(TAG, "❌ Failed to create Vulkan context");
+        }
+
+        return ctxHandle;
+    }
+
+    /** Back-compat helper: your code calls vortek.createVkContext(fd, options). */
+    public long createVkContext(int fd, Options opts) {
+        return initContext(fd, opts);
+    }
+
+    /** Destroy current Vulkan context, if any. */
+    public void destroy() {
+        if (ctxHandle != 0) {
+            try {
+                VortekRendererComponent.destroyVkContext(ctxHandle);
+            } catch (Throwable t) {
+                Log.e(TAG, "Error destroying Vulkan context", t);
+            } finally {
+                ctxHandle = 0;
+            }
+        }
+    }
+
+    public long getContextHandle() {
+        return ctxHandle;
+    }
+
+    // ================= Options =================
+
+    public static class Options {
+        /** Packed Vulkan version (vkMakeVersion). */
+        public int vkMaxVersion;
+
+        /** Max device memory (MB) to expose to Wine. */
+        public int maxDeviceMemory;
+
+        /** Device extensions to expose to Wine (null/empty = none). */
+        public String[] exposedDeviceExtensions;
+
+        public Options() {}
+
+        public static Options defaultOptions() {
+            Options o = new Options();
+            o.vkMaxVersion = GPUHelper.vkMakeVersion(1, 3, 224); // adjust down if needed
+            o.maxDeviceMemory = 4096;
+            try {
+                o.exposedDeviceExtensions = GPUHelper.vkGetDeviceExtensions();
+            } catch (Throwable t) {
+                Log.w(TAG, "Could not query device extensions; exposing none.", t);
+                o.exposedDeviceExtensions = new String[0];
+            }
+            return o;
+        }
+    }
+}

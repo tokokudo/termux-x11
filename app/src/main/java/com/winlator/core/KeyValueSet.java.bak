@@ -1,0 +1,179 @@
+package com.winlator.core;
+
+import java.util.Iterator;
+
+public class KeyValueSet implements Iterable<String[]> {
+    private String data;
+
+    public KeyValueSet() {
+        this.data = "";
+    }
+
+    public KeyValueSet(Object data) {
+        this(data != null ? data.toString() : null);
+    }
+
+    public KeyValueSet(String data) {
+        String str = "";
+        this.data = str;
+        if (!(data == null || data.isEmpty())) {
+            str = data;
+        }
+        this.data = str;
+    }
+
+    private int[] indexOfKey(String key) {
+        int start = 0;
+        String str = ",";
+        int end = this.data.indexOf(str);
+        if (end == -1) {
+            end = this.data.length();
+        }
+        while (start < end) {
+            if (this.data.substring(start, this.data.indexOf("=", start)).equals(key)) {
+                return new int[]{start, end};
+            }
+            start = end + 1;
+            end = this.data.indexOf(str, start);
+            if (end == -1) {
+                end = this.data.length();
+            }
+        }
+        return null;
+    }
+
+    public String get(String key) {
+        return get(key, "");
+    }
+
+    public String get(String key, String fallback) {
+        if (this.data.isEmpty()) {
+            return fallback;
+        }
+        Iterator it = iterator();
+        while (it.hasNext()) {
+            String[] keyValue = (String[]) it.next();
+            if (keyValue[0].equals(key)) {
+                return keyValue[1];
+            }
+        }
+        return fallback;
+    }
+
+    public float getFloat(String key, float fallback) {
+        try {
+            String value = get(key);
+            return !value.isEmpty() ? Float.parseFloat(value) : fallback;
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    public int getInt(String key, int fallback) {
+        try {
+            String value = get(key);
+            return !value.isEmpty() ? Integer.parseInt(value) : fallback;
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    public String getHexString(String key, int fallback) {
+        int result;
+        try {
+            String value = get(key);
+            result = !value.isEmpty() ? Integer.parseInt(value) : fallback;
+        } catch (NumberFormatException e) {
+            result = fallback;
+        }
+        StringBuilder stringBuilder = new StringBuilder();
+        stringBuilder.append("0x");
+        stringBuilder.append(String.format("%08x", new Object[]{Integer.valueOf(result)}));
+        return stringBuilder.toString();
+    }
+
+    public boolean getBoolean(String key) {
+        return getBoolean(key, false);
+    }
+
+    public boolean getBoolean(String key, boolean fallback) {
+        String value = get(key);
+        if (value.isEmpty()) {
+            return fallback;
+        }
+        if (!(value.equals("1") || value.equals("t"))) {
+            if (!value.equals("true")) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public KeyValueSet put(String key, Object value) {
+        int[] range = indexOfKey(key);
+        String str = "=";
+        if (range != null) {
+            String str2 = this.data;
+            int i = range[0];
+            int i2 = range[1];
+            StringBuilder stringBuilder = new StringBuilder();
+            stringBuilder.append(key);
+            stringBuilder.append(str);
+            stringBuilder.append(value);
+            this.data = str2.substring(0, i) + stringBuilder.toString() + str2.substring(i2);
+        } else {
+            String str3;
+            StringBuilder stringBuilder2 = new StringBuilder();
+            if (this.data.isEmpty()) {
+                str3 = "";
+            } else {
+                StringBuilder stringBuilder3 = new StringBuilder();
+                stringBuilder3.append(this.data);
+                stringBuilder3.append(",");
+                str3 = stringBuilder3.toString();
+            }
+            stringBuilder2.append(str3);
+            stringBuilder2.append(key);
+            stringBuilder2.append(str);
+            stringBuilder2.append(value);
+            this.data = stringBuilder2.toString();
+        }
+        return this;
+    }
+
+    public Iterator<String[]> iterator() {
+        int index = this.data.indexOf(",");
+        final int[] start = new int[]{0};
+        final int[] end = new int[1];
+        end[0] = index != -1 ? index : this.data.length();
+        final String[] item = new String[2];
+        return new Iterator<String[]>() {
+            public boolean hasNext() {
+                return start[0] < end[0];
+            }
+
+            public String[] next() {
+                int index = KeyValueSet.this.data.indexOf("=", start[0]);
+                item[0] = KeyValueSet.this.data.substring(start[0], index);
+                item[1] = KeyValueSet.this.data.substring(index + 1, end[0]);
+                int[] iArr = start;
+                int[] iArr2 = end;
+                iArr[0] = iArr2[0] + 1;
+                iArr2[0] = KeyValueSet.this.data.indexOf(",", start[0]);
+                iArr = end;
+                if (iArr[0] == -1) {
+                    iArr[0] = KeyValueSet.this.data.length();
+                }
+                return item;
+            }
+        };
+    }
+
+    public String toString() {
+        return this.data;
+    }
+
+    public boolean isEmpty() {
+        return this.data.isEmpty();
+    }
+}

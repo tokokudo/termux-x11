@@ -1,0 +1,30 @@
+package com.winlator.xserver.extensions;
+
+import android.util.Log;
+import java.util.HashMap;
+
+public class PresentExtension {
+    private final HashMap<Integer, String> dummyEvents = new HashMap<>();
+
+    public PresentExtension() {
+        Log.i("PresentExtension", "🧩 PresentExtension initialized");
+    }
+
+    public void onPresent(int windowId) {
+        Log.i("PresentExtension", "🖼️ Present triggered for window: " + windowId);
+    }
+
+    public void registerEvent(int id, int windowId) {
+        dummyEvents.put(id, "Window-" + windowId);
+        Log.i("PresentExtension", "📌 Event registered: id=" + id + ", window=" + windowId);
+    }
+
+    public void unregisterEvent(int id) {
+        dummyEvents.remove(id);
+        Log.i("PresentExtension", "🗑️ Event unregistered: id=" + id);
+    }
+
+    public boolean isEventRegistered(int id) {
+        return dummyEvents.containsKey(id);
+    }
+}
